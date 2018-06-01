@@ -1,37 +1,34 @@
 extern crate rgengine;
 extern crate crypto;
-extern crate r2d2;
-extern crate r2d2_sqlite;
 extern crate rusqlite;
 extern crate base64;
 
 use std::path::PathBuf;
 use rgengine::storage::Storage;
-use r2d2_sqlite::SqliteConnectionManager;
+use rusqlite::Connection;
 use base64::decode;
 use crypto::{ buffer, aes, blockmodes };
 use crypto::buffer::{ ReadBuffer, WriteBuffer, BufferResult };
 
 pub struct SQLiteStorage {
-    pools: Vec<r2d2::Pool<SqliteConnectionManager>>,
+    conns: Vec<Connection>,
     key: Vec<u8>
 }
 
 impl SQLiteStorage {
 
     pub fn new(source_paths: Vec<PathBuf>, base64_key: &str) -> Self {
-        let pools = Self::build_pools(source_paths);
+        let conns = Self::connect(source_paths);
         let key = Self::normalize_key(base64_key);
-        Self { pools: pools, key: key }
+        Self { conns: conns, key: key }
     }
 
-    fn build_pools(source_paths: Vec<PathBuf>) -> Vec<r2d2::Pool<SqliteConnectionManager>> {
-        let mut pools: Vec<r2d2::Pool<SqliteConnectionManager>> = vec![];
+    fn connect(source_paths: Vec<PathBuf>) -> Vec<Connection> {
+        let mut conns: Vec<Connection> = vec![];
         for source_path in &source_paths {
-            let manager = SqliteConnectionManager::file(source_path.as_path());
-            pools.push(r2d2::Pool::builder().max_size(1).build(manager).unwrap());
+            conns.push(Connection::open(source_path).unwrap());
         }
-        pools
+        conns
     }
 
     fn normalize_key(base64_key: &str) -> Vec<u8> {
@@ -67,9 +64,8 @@ impl SQLiteStorage {
 impl Storage for SQLiteStorage {
 
     fn load(&self, path: &str) -> Result<Vec<u8>, String> {
-        for pool in &self.pools {
-            let conn = try!(pool.get().map_err(|_| "lost connection".to_owned()));
-            let query_result: Result<Vec<u8>, _> = conn.query_row("select data from storage where path = ?", &[&path], |r| r.get(0));
+        for conn in &self.conns {
+            let query_result: Result<Vec<u8>, _> = conn.query_row("select data from storage where path = ?1", &[&path], |r| r.get(0));
             match query_result {
                 Ok(val) => {
                     let result: Vec<u8> = Self::decrypt(val.as_slice(), &self.key[0 .. 32], &self.key[32 .. 48]).unwrap();
