@@ -4,13 +4,12 @@ version = "0.1.0"
 authors = ["Imota Eru <threnody96@gmail.com>"]
 
 [dependencies]
-rust-crypto = "^0.2"
 rand = "0.5"
 base64 = "0.9.2"
+getopts = "0.2"
 
 [dependencies.rgengine]
 git = "https://github.com/threnody96/rgengine"
 
-[dependencies.rusqlite]
-version = "0.13.0"
-features = ["bundled"]
+[dependencies.rgengine-sqlite-storage]
+git = "https://github.com/threnody96/rgengine-sqlite-storage"

@@ -1,31 +1,32 @@
 extern crate rgengine;
-extern crate rusqlite;
-extern crate crypto;
+extern crate rgengine_sqlite_storage;
 extern crate rand;
 extern crate base64;
+extern crate getopts;
 
+use getopts::Options;
+use std::env;
 use std::path::{Path, PathBuf};
-use std::fs::{read_dir, create_dir, metadata};
-use rusqlite::Connection;
-use rgengine::util;
-use crypto::{ symmetriccipher, buffer, aes, blockmodes };
-use crypto::buffer::{ ReadBuffer, WriteBuffer, BufferResult };
+use std::fs::{create_dir, metadata};
+use rgengine::storage::Storage;
+use rgengine::storage::file_storage::FileStorage;
+use rgengine_sqlite_storage::SQLiteStorage;
 use rand::{ OsRng, RngCore };
 
 const MAX_BYTES: u64 = 1024 * 1024 * 1024;
 
 struct DbFile {
-    conn: Connection,
+    storage: SQLiteStorage,
     path: PathBuf,
     index: u16,
-    key: [u8; 48]
+    key: Vec<u8>
 }
 
 impl DbFile {
 
-    pub fn new(dest_path: &PathBuf, index: u16, key: [u8; 48]) -> Self {
+    pub fn new(dest_path: &PathBuf, index: u16, key: Vec<u8>) -> Self {
         Self { 
-            conn: Self::connect(Self::generate_file_path(&dest_path, &index)),
+            storage: SQLiteStorage::new(vec![], Some(Self::generate_file_path(&dest_path, &index)), &base64::encode(&key)),
             path: dest_path.clone(),
             index: index,
             key: key
@@ -41,94 +42,71 @@ impl DbFile {
         }
     }
 
-    fn connect(filename: PathBuf) -> Connection {
-        let conn = Connection::open(filename).unwrap();
-        conn.execute("create table storage (
-                      id     INTEGER PRIMARY KEY,
-                      path   TEXT NOT NULL,
-                      data   BLOB
-                      )", &[]).unwrap();
-        conn.execute("create unique index uindex_path on storage(path)", &[]).unwrap();
-        conn
-    }
-
     fn generate_file_path(dest_path: &PathBuf, index: &u16) -> PathBuf {
-        let filename = "data".to_owned() + &index.to_string() + ".dat";
-        dest_path.clone().join(filename)
+        dest_path.clone().join(format!("data{}.dat", index))
     }
 
 }
 
-fn regist(db: DbFile, src_path: PathBuf, dir_paths: Vec<PathBuf>) -> Result<(), String> {
-    let mut next_dir_paths: Vec<PathBuf> = vec![];
-    let mut current_db = db;
-    for dir_path in &dir_paths {
-        if dir_path.is_file() { return Err(dir_path.to_str().unwrap().to_owned() + " is not directory."); }
-        let real_path = src_path.clone().join(dir_path);
-        let entries = read_dir(real_path).unwrap();
-        for entry in entries {
-            let entry_path = entry.unwrap().path();
-            let next_path = dir_path.clone().join(entry_path.file_name().unwrap());
-            if entry_path.is_file() {
-                current_db = DbFile::next_connection(current_db);
-                regist_file(&current_db, &entry_path, next_path.as_path());
-            } else {
-                next_dir_paths.push(next_path);
-            }
-        }
+fn regist(db: DbFile, fstorage: &FileStorage) -> Result<(), String> {
+    let files = try!(fstorage.list(None));
+    let mut current_storage = db;
+    for file in &files {
+        current_storage = DbFile::next_connection(current_storage);
+        try!(current_storage.storage.save(&file, &try!(fstorage.load(&file))));
     }
-    if next_dir_paths.len() == 0 { return Ok(()); }
-    regist(current_db, src_path, next_dir_paths)
+    Ok(())
 }
 
-fn regist_file(current_db: &DbFile, real_path: &Path, path: &Path) {
-    let data = util::load_file(real_path).unwrap();
-    let encrypted_data = encrypt(&data, &current_db.key[0 .. 32], &current_db.key[32 .. 48]).unwrap();
-    current_db.conn.execute(
-        "insert into storage (path, data) values (?1, ?2)", 
-        &[&path.to_str().unwrap(), &encrypted_data]
-    ).unwrap();
-}
-
-fn prepare(src_path: &PathBuf, dest_path: &PathBuf) -> DbFile {
-    if !src_path.exists() { panic!(src_path.to_str().unwrap().to_owned() + " not found"); }
+fn prepare(dest_path: &PathBuf, key: Option<String>) -> DbFile {
     if dest_path.exists() { panic!(dest_path.to_str().unwrap().to_owned() + " is exists"); }
+    let vec_key = match key {
+        None => { generate_encrypt_key() },
+        Some(k) => { base64::decode(&k).unwrap() }
+    };
+    if vec_key.len() != 48 { panic!(format!("encrypt key must be 48 bytes.")); }
     create_dir(dest_path).unwrap();
-    DbFile::new(&dest_path, 1, generate_encrypt_key())
+    DbFile::new(&dest_path, 1, vec_key)
 }
 
-fn generate_encrypt_key() -> [u8; 48] {
+fn generate_encrypt_key() -> Vec<u8> {
     let mut key: [u8; 48] = [0; 48];
     let mut rng = OsRng::new().unwrap();
     rng.fill_bytes(&mut key);
-    println!("encrypt by: {}", &base64::encode(&key.to_vec()));
-    key
+    let vec_key = key.to_vec();
+    println!("encrypt by: {}", &base64::encode(&vec_key));
+    vec_key
 }
 
-fn encrypt(data: &[u8], key: &[u8], iv: &[u8]) -> Result<Vec<u8>, symmetriccipher::SymmetricCipherError> {
-    let mut encryptor = aes::cbc_encryptor(
-            aes::KeySize::KeySize256,
-            key,
-            iv,
-            blockmodes::PkcsPadding);
-    let mut final_result = Vec::<u8>::new();
-    let mut read_buffer = buffer::RefReadBuffer::new(data);
-    let mut buffer = [0; 4096];
-    let mut write_buffer = buffer::RefWriteBuffer::new(&mut buffer);
-    loop {
-        let result = try!(encryptor.encrypt(&mut read_buffer, &mut write_buffer, true));
-        final_result.extend(write_buffer.take_read_buffer().take_remaining().iter().map(|&i| i));
-        match result {
-            BufferResult::BufferUnderflow => break,
-            BufferResult::BufferOverflow => { }
-        }
-    }
-    Ok(final_result)
+fn build_option_setting() -> Options {
+    let mut opts = Options::new();
+    opts.optopt("t", "target", "Set pack target directory path", "DIRECTORY_PATH");
+    opts.optopt("o", "output", "Set output directory path", "DIRECTORY_PATH");
+    opts.optopt("k", "key", "Set Base64 encoded encrypt key (default: random generate)", "KEY");
+    opts.optflag("h", "help", "print this help menu");
+    opts
+}
+
+fn print_usage(program: &str, opts: Options) {
+    let brief = format!("Usage: {} [options]", program);
+    print!("{}", opts.usage(&brief));
 }
 
 fn main() {
-    let src_path = Path::new("src").to_path_buf();
-    let dest_path = Path::new("dest").to_path_buf();
-    let db = prepare(&src_path, &dest_path);
-    regist(db, src_path, vec![PathBuf::new()]).unwrap();
+    let args: Vec<String> = env::args().collect();
+    let program = args[0].clone();
+    let option = build_option_setting();
+    let matches = match option.parse(&args[1..]) {
+        Ok(m) => { m },
+        Err(f) => { panic!(f.to_string()) }
+    };
+    if matches.opt_present("h") || !matches.opt_present("t") || !matches.opt_present("o") {
+        print_usage(&program, option);
+    } else {
+        let src_path = Path::new(&matches.opt_str("t").unwrap()).to_path_buf();
+        let dest_path = Path::new(&matches.opt_str("o").unwrap()).to_path_buf();
+        let fstorage = FileStorage::new(src_path.to_str().unwrap(), false);
+        let db = prepare(&dest_path, matches.opt_str("k"));
+        regist(db, &fstorage).unwrap();
+    }
 }
