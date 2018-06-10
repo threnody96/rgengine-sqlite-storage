@@ -4,7 +4,7 @@ extern crate rusqlite;
 extern crate base64;
 
 use std::path::PathBuf;
-use rgengine::storage::Storage;
+use rgengine::resource::storage::Storage;
 use rusqlite::Connection;
 use base64::decode;
 use crypto::{ symmetriccipher, buffer, aes, blockmodes };
@@ -18,17 +18,18 @@ struct ConnectionInfo {
 }
 
 pub struct SQLiteStorage {
+    name: String,
     conns: Vec<ConnectionInfo>,
     key: Vec<u8>
 }
 
 impl SQLiteStorage {
 
-    pub fn new(source_paths: Vec<PathBuf>, save_path: Option<PathBuf>, base64_key: &str) -> Self {
+    pub fn new(name: &str, source_paths: Vec<PathBuf>, save_path: Option<PathBuf>, base64_key: &str) -> Self {
         let mut conns = Self::connects(source_paths, false);
         let key = Self::normalize_key(base64_key);
         if save_path.is_some() { conns.push(Self::connect(save_path.unwrap(), true)); }
-        Self { conns: conns, key: key }
+        Self { name: name.to_owned(), conns: conns, key: key }
     }
 
     fn connects(source_paths: Vec<PathBuf>, writeable: bool) -> Vec<ConnectionInfo> {
@@ -111,6 +112,11 @@ impl SQLiteStorage {
 }
 
 impl Storage for SQLiteStorage {
+
+    fn name(&self) -> String {
+        self.name.clone()
+    }
+
 
     fn load(&self, path: &str) -> Result<Vec<u8>, String> {
         for ref conn_info in &self.conns {

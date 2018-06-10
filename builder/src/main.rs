@@ -8,8 +8,8 @@ use getopts::Options;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::fs::{create_dir, metadata};
-use rgengine::storage::Storage;
-use rgengine::storage::file_storage::FileStorage;
+use rgengine::resource::storage::Storage;
+use rgengine::resource::storage::file_storage::FileStorage;
 use rgengine_sqlite_storage::SQLiteStorage;
 use rand::{ OsRng, RngCore };
 
@@ -26,7 +26,7 @@ impl DbFile {
 
     pub fn new(dest_path: &PathBuf, index: u16, key: Vec<u8>) -> Self {
         Self { 
-            storage: SQLiteStorage::new(vec![], Some(Self::generate_file_path(&dest_path, &index)), &base64::encode(&key)),
+            storage: SQLiteStorage::new("dummy", vec![], Some(Self::generate_file_path(&dest_path, &index)), &base64::encode(&key)),
             path: dest_path.clone(),
             index: index,
             key: key
@@ -105,7 +105,7 @@ fn main() {
     } else {
         let src_path = Path::new(&matches.opt_str("t").unwrap()).to_path_buf();
         let dest_path = Path::new(&matches.opt_str("o").unwrap()).to_path_buf();
-        let fstorage = FileStorage::new(src_path.to_str().unwrap(), false);
+        let fstorage = FileStorage::new("dummy", src_path.to_str().unwrap(), false);
         let db = prepare(&dest_path, matches.opt_str("k"));
         regist(db, &fstorage).unwrap();
     }
